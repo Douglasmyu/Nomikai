@@ -149,7 +149,11 @@ enabled = true
 # in emails.
 site_url = "http://127.0.0.1:3000"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+additional_redirect_urls = [
+  "https://127.0.0.1:3000",
+  "http://127.0.0.1:3000/auth/confirm",
+  "http://localhost:3000/auth/confirm",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to the local API URL (http://127.0.0.1:<port>/auth/v1).
@@ -226,6 +230,15 @@ otp_expiry = 3600
 # [auth.email.template.invite]
 # subject = "You have been invited"
 # content_path = "./supabase/templates/invite.html"
+
+# Code-based auth: both sign-in and signup emails carry the 6-digit OTP.
+[auth.email.template.magic_link]
+subject = "Your Nomikai code"
+content_path = "./supabase/templates/otp.html"
+
+[auth.email.template.confirmation]
+subject = "Confirm your Nomikai account"
+content_path = "./supabase/templates/otp.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]

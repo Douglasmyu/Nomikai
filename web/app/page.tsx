@@ -1,69 +1,71 @@
-import Image from "next/image";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import AccountPanel from "./account-panel";
 
-export default function Home() {
+export default async function Home(props: PageProps<"/">) {
+  // Email-link redirects can land on "/" when the redirect allow-list falls
+  // back to the site URL; hand the code to the confirm route.
+  const { code } = await props.searchParams;
+  if (typeof code === "string") redirect(`/auth/confirm?code=${code}`);
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("username, user_code, timezone, created_at")
+    .eq("id", user.id)
+    .single();
+  if (!profile) redirect("/onboarding");
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <main className="flex flex-1 flex-col">
+      <div
+        className="flex items-baseline gap-2.5 border-b-2 px-4 pt-3.5 pb-3"
+        style={{ borderColor: "var(--color-divider)" }}
+      >
+        <h1 className="mr-auto text-[20px] tracking-[-0.02em]">NOMIKAI</h1>
+        <span className="kicker">@{profile.username}</span>
+      </div>
+
+      <div className="px-4 py-7">
+        <div className="hr" />
+        <h2 className="my-4 text-[32px] leading-[1.05] tracking-[-0.03em]">
+          You&apos;re in.
+        </h2>
+        <p className="mb-4 text-[13.5px] opacity-70">
+          Your account works on its own — no friends required. Logging drinks
+          is the next phase of the build.
+        </p>
+
+        <div className="kicker mb-2">Your week so far</div>
+        <div
+          className="grid grid-cols-2 border"
+          style={{ borderColor: "var(--color-divider)" }}
+        >
+          <div
+            className="border-r px-3.5 py-3"
+            style={{ borderColor: "var(--color-divider)" }}
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <div className="font-extrabold text-[30px] tabular-nums">0</div>
+            <div className="kicker">Unique drinks</div>
+          </div>
+          <div className="px-3.5 py-3">
+            <div className="font-extrabold text-[30px] tabular-nums">0</div>
+            <div className="kicker">Nights out</div>
+          </div>
         </div>
-      </main>
-    </div>
+      </div>
+
+      <AccountPanel
+        username={profile.username}
+        userCode={profile.user_code}
+        timezone={profile.timezone}
+        email={user.email ?? ""}
+      />
+    </main>
   );
 }
