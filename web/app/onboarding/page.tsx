@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 export default function OnboardingPage() {
-  const supabase = createClient();
   const router = useRouter();
   const detected = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -27,6 +26,7 @@ export default function OnboardingPage() {
   async function submit() {
     setBusy(true);
     setError(null);
+    const supabase = createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();

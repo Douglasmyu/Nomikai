@@ -7,7 +7,6 @@ import { createClient } from "@/lib/supabase/client";
 type Mode = "email" | "password" | "code";
 
 export default function LoginPage() {
-  const supabase = createClient();
   const router = useRouter();
   const [mode, setMode] = useState<Mode>("email");
   // "email" = OTP verify, "signup" = confirm a new password account
@@ -21,7 +20,7 @@ export default function LoginPage() {
   async function sendCode() {
     setBusy(true);
     setError(null);
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error } = await createClient().auth.signInWithOtp({
       email,
       options: {
         shouldCreateUser: true,
@@ -37,7 +36,10 @@ export default function LoginPage() {
   async function signInWithPassword() {
     setBusy(true);
     setError(null);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await createClient().auth.signInWithPassword({
+      email,
+      password,
+    });
     setBusy(false);
     if (error) return setError(error.message);
     router.push("/");
@@ -47,7 +49,7 @@ export default function LoginPage() {
   async function createAccount() {
     setBusy(true);
     setError(null);
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await createClient().auth.signUp({
       email,
       password,
       options: { emailRedirectTo: `${location.origin}/auth/confirm` },
@@ -66,7 +68,7 @@ export default function LoginPage() {
   async function verifyCode() {
     setBusy(true);
     setError(null);
-    const { error } = await supabase.auth.verifyOtp({
+    const { error } = await createClient().auth.verifyOtp({
       email,
       token: code,
       type: codeType,

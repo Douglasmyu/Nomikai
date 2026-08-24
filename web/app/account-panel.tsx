@@ -10,7 +10,6 @@ export default function AccountPanel(props: {
   timezone: string;
   email: string;
 }) {
-  const supabase = createClient();
   const router = useRouter();
   const [username, setUsername] = useState(props.username);
   const [timezone, setTimezone] = useState(props.timezone);
@@ -28,6 +27,7 @@ export default function AccountPanel(props: {
   async function save() {
     setBusy(true);
     setStatus(null);
+    const supabase = createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -47,7 +47,7 @@ export default function AccountPanel(props: {
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await createClient().auth.signOut();
     router.push("/login");
     router.refresh();
   }
@@ -58,6 +58,7 @@ export default function AccountPanel(props: {
       return;
     }
     setBusy(true);
+    const supabase = createClient();
     const { error } = await supabase.rpc("delete_account");
     if (error) {
       setBusy(false);
