@@ -10,7 +10,7 @@ Nomikai — a drink-counting app with leaderboards and different drinks to try. 
 
 - `web/` — Next.js (TypeScript, App Router, Tailwind). Talks to Supabase with the publishable key (`web/.env.local`).
 - `api/` — NestJS (TypeScript) with Drizzle ORM (`api/drizzle.config.ts`, schema in `api/src/db/schema.ts`). Uses the secret key / direct DB connection (`api/.env`).
-- `supabase/` — Supabase CLI config and migrations. No schema exists yet (deliberately — migrations were removed; setup only).
+- `supabase/` — Supabase CLI config, migrations (schema starts with `profiles`), and auth email templates (`templates/otp.html`; hosted free tier ignores them until custom SMTP is configured).
 
 ## Commands
 
