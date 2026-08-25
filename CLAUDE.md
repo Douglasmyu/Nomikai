@@ -9,6 +9,8 @@ Nomikai — a drink-counting app with leaderboards and different drinks to try. 
 ## Structure
 
 - `web/` — Next.js (TypeScript, App Router, Tailwind). Talks to Supabase with the publishable key (`web/.env.local`).
+  Anything read from Supabase in a client component goes through TanStack Query (`useQuery`/`useMutation` + `invalidateQueries`),
+  not `useState` + `useEffect`. Provider lives in `web/app/providers.tsx`; `useState` is for form fields and UI toggles only.
 - `api/` — NestJS (TypeScript) with Drizzle ORM (`api/drizzle.config.ts`, schema in `api/src/db/schema.ts`). Uses the secret key / direct DB connection (`api/.env`).
 - `supabase/` — Supabase CLI config, migrations (schema starts with `profiles`), and auth email templates (`templates/otp.html`; hosted free tier ignores them until custom SMTP is configured).
 
@@ -23,5 +25,5 @@ Nomikai — a drink-counting app with leaderboards and different drinks to try. 
 
 - Hosted project ref: `zcnjovwozgsxowijebgw` (AWS us-west-2). Secrets live in root `.env` (gitignored).
 - The direct connection host `db.zcnjovwozgsxowijebgw.supabase.co` is IPv6-only and unreachable from this network. Use the IPv4 session pooler instead: `aws-0-us-west-2.pooler.supabase.com:5432`, user `postgres.zcnjovwozgsxowijebgw`.
-- The locally logged-in Supabase CLI account does NOT have access to this project (`supabase link` fails with a privileges error — project belongs to a different account). Use `--db-url` based commands (e.g. `supabase db push --db-url "$SUPABASE_DB_URL"`) instead of linked commands.
+- The Supabase CLI is logged in and linked to this project. Linked db commands still resolve the IPv6-only direct host, so prefer `--db-url` with the IPv4 pooler for db operations (e.g. `supabase db push --db-url "$SUPABASE_DB_URL"`).
 - npm note: `~/.npm` contains root-owned files, so plain `npm install` fails. Either fix once with `sudo chown -R 501:20 ~/.npm` or set `npm_config_cache` to a writable dir.
