@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import AccountPanel from "./account-panel";
@@ -37,9 +38,11 @@ export default async function Home(props: PageProps<"/">) {
           You&apos;re in.
         </h2>
         <p className="mb-4 text-[13.5px] opacity-70">
-          Your account works on its own — no friends required. Logging drinks
-          is the next phase of the build.
+          Your account works on its own — no friends required.
         </p>
+        <Link href="/log" className="btn btn-primary btn-block mb-6">
+          Log a drink
+        </Link>
 
         <div className="kicker mb-2">Your week so far</div>
         <div

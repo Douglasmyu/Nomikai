@@ -1,8 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+
+// Supabase throws PostgrestError (has .code) or AuthError (doesn't).
+function message(e: unknown) {
+  const err = e as { code?: string; message?: string };
+  if (err.code === "23505") return "That username is taken.";
+  return err.message ?? "Something went wrong.";
+}
 
 export default function AccountPanel(props: {
   username: string;
@@ -13,9 +21,7 @@ export default function AccountPanel(props: {
   const router = useRouter();
   const [username, setUsername] = useState(props.username);
   const [timezone, setTimezone] = useState(props.timezone);
-  const [status, setStatus] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
   const timezones = useMemo<string[]>(
     () =>
       typeof Intl.supportedValuesOf === "function"
@@ -24,51 +30,63 @@ export default function AccountPanel(props: {
     [props.timezone]
   );
 
-  async function save() {
-    setBusy(true);
-    setStatus(null);
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    const { error } = await supabase
-      .from("profiles")
-      .update({ username, timezone })
-      .eq("id", user!.id);
-    setBusy(false);
-    if (error) {
-      setStatus(
-        error.code === "23505" ? "That username is taken." : error.message
-      );
-      return;
-    }
-    setStatus("Saved.");
-    router.refresh();
-  }
+  const save = useMutation({
+    mutationFn: async () => {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from("profiles")
+        .update({ username, timezone })
+        .eq("id", user!.id);
+      if (error) throw error;
+    },
+    // The profile is rendered by the server component above us.
+    onSuccess: () => router.refresh(),
+  });
 
-  async function signOut() {
-    await createClient().auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }
+  const signOut = useMutation({
+    mutationFn: async () => {
+      const { error } = await createClient().auth.signOut();
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      router.push("/login");
+      router.refresh();
+    },
+  });
 
-  async function deleteAccount() {
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      return;
-    }
-    setBusy(true);
-    const supabase = createClient();
-    const { error } = await supabase.rpc("delete_account");
-    if (error) {
-      setBusy(false);
-      setStatus(error.message);
-      return;
-    }
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }
+  const deleteAccount = useMutation({
+    mutationFn: async () => {
+      const supabase = createClient();
+      // §3: photos are purged permanently — delete_account() cascades rows but
+      // not storage objects, so empty the photos folder first.
+      // ponytail: list() caps at 100 objects; paginate if anyone ever logs more photos than that
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (user) {
+        const { data: files } = await supabase.storage.from("photos").list(user.id);
+        if (files?.length) {
+          await supabase.storage
+            .from("photos")
+            .remove(files.map((f) => `${user.id}/${f.name}`));
+        }
+      }
+      const { error } = await supabase.rpc("delete_account");
+      if (error) throw error;
+      await supabase.auth.signOut();
+    },
+    onSuccess: () => {
+      router.push("/login");
+      router.refresh();
+    },
+  });
+
+  const busy = save.isPending || deleteAccount.isPending;
+  const failure = save.error ?? signOut.error ?? deleteAccount.error;
+  const status = failure ? message(failure) : save.isSuccess ? "Saved." : null;
 
   return (
     <div className="mt-auto px-4 pb-8">
@@ -78,7 +96,7 @@ export default function AccountPanel(props: {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          save();
+          save.mutate();
         }}
       >
         <div className="field mb-3">
@@ -119,7 +137,10 @@ export default function AccountPanel(props: {
       {status && <p className="mt-2 text-sm font-semibold">{status}</p>}
 
       <div className="hr my-4" />
-      <button className="btn btn-secondary btn-block !min-h-[42px]" onClick={signOut}>
+      <button
+        className="btn btn-secondary btn-block !min-h-[42px]"
+        onClick={() => signOut.mutate()}
+      >
         Sign out
       </button>
       <button
@@ -130,7 +151,10 @@ export default function AccountPanel(props: {
           borderWidth: 1,
         }}
         disabled={busy}
-        onClick={deleteAccount}
+        onClick={() => {
+          if (!confirmDelete) return setConfirmDelete(true);
+          deleteAccount.mutate();
+        }}
       >
         {confirmDelete
           ? "Tap again to permanently delete everything"

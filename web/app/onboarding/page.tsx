@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
@@ -20,36 +21,36 @@ export default function OnboardingPage() {
   const [username, setUsername] = useState("");
   const [timezone, setTimezone] = useState(detected);
   const [attested, setAttested] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      router.push("/login");
-      return;
-    }
-    const { error } = await supabase.from("profiles").insert({
-      id: user.id,
-      username,
-      timezone,
-      age_attested_at: new Date().toISOString(),
-    });
-    setBusy(false);
-    if (error) {
-      setError(
-        error.code === "23505" ? "That username is taken." : error.message
-      );
-      return;
-    }
-    router.push("/");
-    router.refresh();
-  }
+  const submit = useMutation({
+    mutationFn: async () => {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      // Signed out while the form was open.
+      if (!user) return false;
+      const { error } = await supabase.from("profiles").insert({
+        id: user.id,
+        username,
+        timezone,
+        age_attested_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+      return true;
+    },
+    onSuccess: (created) => {
+      router.push(created ? "/" : "/login");
+      router.refresh();
+    },
+  });
+
+  const failure = submit.error as { code?: string; message?: string } | null;
+  const error = failure
+    ? failure.code === "23505"
+      ? "That username is taken."
+      : failure.message
+    : null;
 
   return (
     <main className="flex flex-1 flex-col">
@@ -64,7 +65,7 @@ export default function OnboardingPage() {
         className="p-5"
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          submit.mutate();
         }}
       >
         <div className="field mb-4">
@@ -118,7 +119,7 @@ export default function OnboardingPage() {
 
         <button
           className="btn btn-primary btn-block mt-5"
-          disabled={busy || !attested}
+          disabled={submit.isPending || !attested}
         >
           Start logging
         </button>

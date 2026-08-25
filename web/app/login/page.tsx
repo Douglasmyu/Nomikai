@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
@@ -14,70 +15,76 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  async function sendCode() {
-    setBusy(true);
-    setError(null);
-    const { error } = await createClient().auth.signInWithOtp({
-      email,
-      options: {
-        shouldCreateUser: true,
-        emailRedirectTo: `${location.origin}/auth/confirm`,
-      },
-    });
-    setBusy(false);
-    if (error) return setError(error.message);
-    setCodeType("email");
-    setMode("code");
-  }
-
-  async function signInWithPassword() {
-    setBusy(true);
-    setError(null);
-    const { error } = await createClient().auth.signInWithPassword({
-      email,
-      password,
-    });
-    setBusy(false);
-    if (error) return setError(error.message);
+  const goHome = () => {
     router.push("/");
     router.refresh();
-  }
+  };
 
-  async function createAccount() {
-    setBusy(true);
-    setError(null);
-    const { data, error } = await createClient().auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo: `${location.origin}/auth/confirm` },
-    });
-    setBusy(false);
-    if (error) return setError(error.message);
-    if (data.session) {
-      router.push("/");
-      router.refresh();
-      return;
-    }
-    setCodeType("signup");
-    setMode("code");
-  }
+  const sendCode = useMutation({
+    mutationFn: async () => {
+      const { error } = await createClient().auth.signInWithOtp({
+        email,
+        options: {
+          shouldCreateUser: true,
+          emailRedirectTo: `${location.origin}/auth/confirm`,
+        },
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      setCodeType("email");
+      setMode("code");
+    },
+  });
 
-  async function verifyCode() {
-    setBusy(true);
-    setError(null);
-    const { error } = await createClient().auth.verifyOtp({
-      email,
-      token: code,
-      type: codeType,
-    });
-    setBusy(false);
-    if (error) return setError(error.message);
-    router.push("/");
-    router.refresh();
-  }
+  const signInWithPassword = useMutation({
+    mutationFn: async () => {
+      const { error } = await createClient().auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) throw error;
+    },
+    onSuccess: goHome,
+  });
+
+  const createAccount = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await createClient().auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: `${location.origin}/auth/confirm` },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      // A session comes back immediately when email confirmation is off.
+      if (data.session) return goHome();
+      setCodeType("signup");
+      setMode("code");
+    },
+  });
+
+  const verifyCode = useMutation({
+    mutationFn: async () => {
+      const { error } = await createClient().auth.verifyOtp({
+        email,
+        token: code,
+        type: codeType,
+      });
+      if (error) throw error;
+    },
+    onSuccess: goHome,
+  });
+
+  // One error line serves all four paths. Retrying clears that mutation's own
+  // error; switching paths has to clear the other three.
+  const all = [sendCode, signInWithPassword, createAccount, verifyCode];
+  const busy = all.some((m) => m.isPending);
+  const error = all.find((m) => m.error)?.error;
+  const resetErrors = () => all.forEach((m) => m.reset());
 
   return (
     <main className="flex flex-1 flex-col">
@@ -97,7 +104,7 @@ export default function LoginPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              verifyCode();
+              verifyCode.mutate();
             }}
           >
             <p className="text-sm opacity-80">
@@ -126,6 +133,7 @@ export default function LoginPage() {
               className="btn btn-ghost mt-3 text-sm"
               onClick={() => {
                 setCode("");
+                resetErrors();
                 setMode("email");
               }}
             >
@@ -136,8 +144,8 @@ export default function LoginPage() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (mode === "email") sendCode();
-              else signInWithPassword();
+              if (mode === "email") sendCode.mutate();
+              else signInWithPassword.mutate();
             }}
           >
             <div className="field">
@@ -176,7 +184,10 @@ export default function LoginPage() {
                 <button
                   type="button"
                   className="btn btn-secondary btn-block"
-                  onClick={() => setMode("password")}
+                  onClick={() => {
+                    resetErrors();
+                    setMode("password");
+                  }}
                 >
                   Use a password instead
                 </button>
@@ -190,14 +201,17 @@ export default function LoginPage() {
                   type="button"
                   className="btn btn-secondary btn-block"
                   disabled={busy}
-                  onClick={createAccount}
+                  onClick={() => createAccount.mutate()}
                 >
                   Create account with this password
                 </button>
                 <button
                   type="button"
                   className="btn btn-ghost mt-3 text-sm"
-                  onClick={() => setMode("email")}
+                  onClick={() => {
+                    resetErrors();
+                    setMode("email");
+                  }}
                 >
                   Email me a code instead
                 </button>
@@ -208,7 +222,7 @@ export default function LoginPage() {
 
         {error && (
           <p className="mt-4 text-sm font-semibold" style={{ color: "var(--color-accent)" }}>
-            {error}
+            {error.message}
           </p>
         )}
       </div>
