@@ -59,6 +59,20 @@ export default function AccountPanel(props: {
     }
     setBusy(true);
     const supabase = createClient();
+    // §3: photos are purged permanently — delete_account() cascades rows but
+    // not storage objects, so empty the photos folder first.
+    // ponytail: list() caps at 100 objects; paginate if anyone ever logs more photos than that
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user) {
+      const { data: files } = await supabase.storage.from("photos").list(user.id);
+      if (files?.length) {
+        await supabase.storage
+          .from("photos")
+          .remove(files.map((f) => `${user.id}/${f.name}`));
+      }
+    }
     const { error } = await supabase.rpc("delete_account");
     if (error) {
       setBusy(false);
