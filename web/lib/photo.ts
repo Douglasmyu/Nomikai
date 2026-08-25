@@ -1,5 +1,3 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 // Compress to JPEG targeting <500KB — not WebP: Safari/iOS can't encode it
 // and silently falls back to PNG.
 export async function compressPhoto(file: File): Promise<Blob> {
@@ -18,20 +16,9 @@ export async function compressPhoto(file: File): Promise<Blob> {
   );
 }
 
-// The photos bucket is private, so every render goes through signed URLs.
-// Batch-signs the given paths (nulls and duplicates dropped) → path → URL.
-export async function signPhotoPaths(
-  supabase: SupabaseClient,
-  paths: (string | null | undefined)[]
-): Promise<Map<string, string>> {
-  const unique = [...new Set(paths.filter((p): p is string => !!p))];
-  if (!unique.length) return new Map();
-  const { data } = await supabase.storage
-    .from("photos")
-    .createSignedUrls(unique, 3600);
-  const map = new Map<string, string>();
-  for (const d of data ?? []) {
-    if (d.path && d.signedUrl) map.set(d.path, d.signedUrl);
-  }
-  return map;
+/** Photos ride to the API as multipart; the API derives the storage path. */
+export function photoForm(blob: Blob): FormData {
+  const form = new FormData();
+  form.append("file", blob, "photo.jpg");
+  return form;
 }

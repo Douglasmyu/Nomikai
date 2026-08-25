@@ -2,8 +2,7 @@
 
 import { useInfiniteQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
-import { signPhotoPaths } from "@/lib/photo";
+import { api } from "@/lib/api";
 import EntryCard, { type EntryRowData } from "./entry-card";
 
 const PAGE_SIZE = 30;
@@ -13,23 +12,14 @@ type Cursor = { before_logged_at: string; before_id: string } | null;
 export default function Feed({ viewerId }: { viewerId: string }) {
   const feed = useInfiniteQuery({
     queryKey: ["feed"],
-    queryFn: async ({ pageParam }: { pageParam: Cursor }) => {
-      const supabase = createClient();
-      const { data, error } = await supabase.rpc("feed_entries", {
-        ...(pageParam ?? {}),
-        lim: PAGE_SIZE,
-      });
-      if (error) throw error;
-      const rows = (data ?? []) as EntryRowData[];
-      const signed = await signPhotoPaths(supabase, [
-        ...rows.map((r) => r.photo_path),
-        ...rows.map((r) => r.avatar_url),
-      ]);
-      return rows.map((r) => ({
-        ...r,
-        photo_url: r.photo_path ? signed.get(r.photo_path) : null,
-        avatar_src: r.avatar_url ? signed.get(r.avatar_url) : null,
-      }));
+    // The API signs photo and avatar URLs onto each row.
+    queryFn: ({ pageParam }: { pageParam: Cursor }) => {
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (pageParam) {
+        params.set("before_logged_at", pageParam.before_logged_at);
+        params.set("before_id", pageParam.before_id);
+      }
+      return api<EntryRowData[]>(`/feed?${params}`);
     },
     initialPageParam: null as Cursor,
     getNextPageParam: (last): Cursor =>

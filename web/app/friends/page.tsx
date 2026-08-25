@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { api, json } from "@/lib/api";
 import Header from "../header";
 
 type FriendshipRow = {
@@ -28,59 +28,23 @@ export default function FriendsPage() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const user = useQuery({
-    queryKey: ["user"],
-    queryFn: async () => (await createClient().auth.getUser()).data.user,
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => api<{ id: string; username: string; user_code: string }>("/me"),
     staleTime: Infinity,
   });
-  const userId = user.data?.id ?? null;
-
-  const me = useQuery({
-    queryKey: ["profile", userId],
-    enabled: !!userId,
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("profiles")
-        .select("username, user_code")
-        .eq("id", userId!)
-        .single();
-      if (error) throw error;
-      return data;
-    },
-  });
+  const userId = me.data?.id ?? null;
 
   const friendships = useQuery({
     queryKey: ["friendships"],
     enabled: !!userId,
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("friendships")
-        .select(
-          "id, requester_id, addressee_id, status, requester:profiles!friendships_requester_id_fkey(username), addressee:profiles!friendships_addressee_id_fkey(username)"
-        )
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return data as unknown as FriendshipRow[];
-    },
+    queryFn: () => api<FriendshipRow[]>("/friendships"),
   });
 
   const send = useMutation({
-    mutationFn: async (username: string) => {
-      const supabase = createClient();
-      const name = username.trim().toLowerCase();
-      const { data: target, error: lookupError } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("username", name)
-        .maybeSingle();
-      if (lookupError) throw lookupError;
-      if (!target) throw new Error(`No user named @${name}.`);
-      const { error } = await supabase.from("friendships").insert({
-        requester_id: userId,
-        addressee_id: target.id,
-      });
-      if (error) throw error;
-    },
+    // The API resolves the username and rejects unknown ones with a 404.
+    mutationFn: (username: string) =>
+      api("/friendships", { method: "POST", ...json({ username }) }),
     onSuccess: () => {
       setAddName("");
       queryClient.invalidateQueries();
@@ -88,25 +52,13 @@ export default function FriendsPage() {
   });
 
   const accept = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await createClient()
-        .from("friendships")
-        .update({ status: "accepted" })
-        .eq("id", id);
-      if (error) throw error;
-    },
+    mutationFn: (id: string) => api(`/friendships/${id}`, { method: "PATCH" }),
     // acceptance changes what the feed and profiles show — refetch everything
     onSuccess: () => queryClient.invalidateQueries(),
   });
 
   const remove = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await createClient()
-        .from("friendships")
-        .delete()
-        .eq("id", id);
-      if (error) throw error;
-    },
+    mutationFn: (id: string) => api(`/friendships/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       setConfirmRemove(null);
       queryClient.invalidateQueries();

@@ -2,8 +2,7 @@
 
 import { use } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { createClient } from "@/lib/supabase/client";
-import { signPhotoPaths } from "@/lib/photo";
+import { api } from "@/lib/api";
 import Header from "../../header";
 import EntryCard, { type EntryRowData } from "../../entry-card";
 
@@ -22,66 +21,28 @@ export default function NightOutPage({
 }) {
   const { id } = use(params);
 
-  const user = useQuery({
-    queryKey: ["user"],
-    queryFn: async () => (await createClient().auth.getUser()).data.user,
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => api<{ id: string }>("/me"),
     staleTime: Infinity,
   });
-  const viewerId = user.data?.id ?? null;
+  const viewerId = me.data?.id ?? null;
 
   const night = useQuery({
     queryKey: ["night", id],
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("night_outs")
-        .select("id, user_id, name, location, started_at")
-        .eq("id", id)
-        .single();
-      if (error) throw error;
-      return data as NightOut;
-    },
+    queryFn: () => api<NightOut>(`/night-outs/${id}`),
     retry: false,
   });
 
   const entries = useQuery({
     queryKey: ["night-entries", id],
-    queryFn: async () => {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("entries")
-        .select(
-          "id, user_id, drinks(name), custom_drink_name, night_out_id, location, photo_path, note, recommended, logged_at"
-        )
-        .eq("night_out_id", id)
-        .order("logged_at", { ascending: true });
-      if (error) throw error;
-      const rows = (data ?? []) as unknown as {
-        id: string;
-        user_id: string;
-        drinks: { name: string } | null;
-        custom_drink_name: string | null;
-        night_out_id: string | null;
-        location: string | null;
-        photo_path: string | null;
-        note: string | null;
-        recommended: boolean | null;
-        logged_at: string;
-      }[];
-      const signed = await signPhotoPaths(
-        supabase,
-        rows.map((r) => r.photo_path)
-      );
-      return rows.map(
-        (r): EntryRowData => ({
-          ...r,
-          username: "",
-          avatar_url: null,
-          drink_name: r.drinks?.name ?? r.custom_drink_name ?? "",
-          night_out_name: null,
-          photo_url: r.photo_path ? signed.get(r.photo_path) : null,
-        })
-      );
-    },
+    // The API gates on the night's owner and signs the photo URLs. The label
+    // is already the page heading, so it is dropped from the rows.
+    queryFn: async () =>
+      (await api<EntryRowData[]>(`/night-outs/${id}/entries`)).map((r) => ({
+        ...r,
+        night_out_name: null,
+      })),
   });
 
   return (

@@ -3,10 +3,11 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
+import { api, json } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
-import { compressPhoto } from "@/lib/photo";
+import { compressPhoto, photoForm } from "@/lib/photo";
 
-// Supabase throws PostgrestError (has .code) or AuthError (doesn't).
+// ApiError carries the SQLSTATE; Supabase auth errors don't.
 function message(e: unknown) {
   const err = e as { code?: string; message?: string };
   if (err.code === "23505") return "That username is taken.";
@@ -34,40 +35,19 @@ export default function AccountPanel(props: {
   );
 
   const save = useMutation({
-    mutationFn: async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const { error } = await supabase
-        .from("profiles")
-        .update({ username, timezone })
-        .eq("id", user!.id);
-      if (error) throw error;
-    },
+    mutationFn: () =>
+      api("/me", { method: "PATCH", ...json({ username, timezone }) }),
     // The profile is rendered by the server component above us.
     onSuccess: () => router.refresh(),
   });
 
   const uploadAvatar = useMutation({
-    mutationFn: async (file: File) => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const blob = await compressPhoto(file);
-      const path = `${user!.id}/avatar.jpg`;
-      const { error: uploadError } = await supabase.storage
-        .from("photos")
-        .upload(path, blob, { contentType: "image/jpeg", upsert: true });
-      if (uploadError) throw uploadError;
-      // avatar_url stores the storage path; renders go through signed URLs
-      const { error } = await supabase
-        .from("profiles")
-        .update({ avatar_url: path })
-        .eq("id", user!.id);
-      if (error) throw error;
-    },
+    // The API derives the storage path and stores it on the profile.
+    mutationFn: async (file: File) =>
+      api("/me/avatar", {
+        method: "POST",
+        body: photoForm(await compressPhoto(file)),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries();
       router.refresh();
@@ -86,25 +66,12 @@ export default function AccountPanel(props: {
   });
 
   const deleteAccount = useMutation({
+    // §3: the API purges the photos folder, then deletes the auth user, which
+    // cascades every row.
     mutationFn: async () => {
-      const supabase = createClient();
-      // §3: photos are purged permanently — delete_account() cascades rows but
-      // not storage objects, so empty the photos folder first.
-      // ponytail: list() caps at 100 objects; paginate if anyone ever logs more photos than that
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (user) {
-        const { data: files } = await supabase.storage.from("photos").list(user.id);
-        if (files?.length) {
-          await supabase.storage
-            .from("photos")
-            .remove(files.map((f) => `${user.id}/${f.name}`));
-        }
-      }
-      const { error } = await supabase.rpc("delete_account");
-      if (error) throw error;
-      await supabase.auth.signOut();
+      await api("/me", { method: "DELETE" });
+      // scope local: the account is gone, so a server-side logout would 403.
+      await createClient().auth.signOut({ scope: "local" });
     },
     onSuccess: () => {
       router.push("/login");

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { apiServer } from "@/lib/api-server";
 import { createClient } from "@/lib/supabase/server";
 import Header from "./header";
 import Feed from "./feed";
@@ -16,11 +17,7 @@ export default async function Home(props: PageProps<"/">) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("username")
-    .eq("id", user.id)
-    .single();
+  const profile = await apiServer<{ username: string } | null>("/me");
   if (!profile) redirect("/onboarding");
 
   return (

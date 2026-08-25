@@ -4,9 +4,9 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { api, json } from "@/lib/api";
 import { normalizeDrinkName } from "@/lib/normalize";
-import { compressPhoto } from "@/lib/photo";
+import { compressPhoto, photoForm } from "@/lib/photo";
 import Header from "../header";
 
 type Drink = {
@@ -21,10 +21,10 @@ type Selection = { drinkId: number | null; name: string };
 
 type EntryRow = {
   drink_id: number | null;
-  drinks: { name: string } | null;
+  drink_name: string | null;
   custom_drink_name: string | null;
   night_out_id: string | null;
-  night_outs: { name: string } | null;
+  night_out_name: string | null;
   logged_at: string;
   location: string | null;
   note: string | null;
@@ -68,15 +68,7 @@ function LogLoader() {
   const editId = useSearchParams().get("id");
   const entry = useQuery({
     queryKey: ["entry", editId],
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("entries")
-        .select("*, drinks(name), night_outs(name)")
-        .eq("id", editId!)
-        .single();
-      if (error) throw error;
-      return data as EntryRow;
-    },
+    queryFn: () => api<EntryRow>(`/entries/${editId}`),
     enabled: !!editId,
     retry: false,
   });
@@ -115,52 +107,37 @@ function LogForm({
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const user = useQuery({
-    queryKey: ["user"],
-    queryFn: async () => (await createClient().auth.getUser()).data.user,
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => api<{ id: string } | null>("/me"),
     staleTime: Infinity,
   });
-  const userId = user.data?.id ?? null;
+  const userId = me.data?.id ?? null;
   useEffect(() => {
-    if (user.isSuccess && !user.data) router.push("/login");
-  }, [user.isSuccess, user.data, router]);
+    if (me.isSuccess && !me.data) router.push("/login");
+  }, [me.isSuccess, me.data, router]);
 
   // Curated list: fetched on first focus, then reused for the session.
   const [drinksWanted, setDrinksWanted] = useState(false);
   const drinks = useQuery({
     queryKey: ["drinks"],
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("drinks")
-        .select("id, name, normalized_name, is_alcoholic")
-        .order("name");
-      if (error) throw error;
-      return (data ?? []) as Drink[];
-    },
+    queryFn: () => api<Drink[]>("/drinks"),
     enabled: drinksWanted,
     staleTime: Infinity,
   });
 
   // Own logging history, for ranking repeats above the curated list (F4).
-  // Explicit user filter: RLS also returns friends' entries now.
   const history = useQuery({
     queryKey: ["drink-history"],
     enabled: drinksWanted && !!userId,
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("entries")
-        .select("drink_id, custom_drink_name, normalized_drink_name")
-        .eq("user_id", userId!);
-      if (error) throw error;
-      return (data ?? []) as HistoryRow[];
-    },
+    queryFn: () => api<HistoryRow[]>("/entries/history"),
   });
 
   const [sel, setSel] = useState<Selection | null>(
     entry
       ? {
           drinkId: entry.drink_id,
-          name: entry.drink_id ? entry.drinks!.name : entry.custom_drink_name!,
+          name: entry.drink_id ? entry.drink_name! : entry.custom_drink_name!,
         }
       : null
   );
@@ -184,25 +161,19 @@ function LogForm({
   const nights = useQuery({
     queryKey: ["night-outs"],
     enabled: showDetails && !!userId,
-    queryFn: async () => {
+    queryFn: () => {
       const since = new Date();
       since.setDate(since.getDate() - 7);
-      const { data, error } = await createClient()
-        .from("night_outs")
-        .select("id, name")
-        .eq("user_id", userId!)
-        .gte("started_at", since.toISOString())
-        .order("started_at", { ascending: false })
-        .limit(20);
-      if (error) throw error;
-      return (data ?? []) as { id: string; name: string }[];
+      return api<{ id: string; name: string }[]>(
+        `/night-outs?since=${encodeURIComponent(since.toISOString())}`
+      );
     },
   });
   // Editing an entry whose night out is older than the 7-day window: keep it
   // selectable rather than silently dropping the assignment.
   const nightOptions =
     entry?.night_out_id && !nights.data?.some((n) => n.id === entry.night_out_id)
-      ? [{ id: entry.night_out_id, name: entry.night_outs?.name ?? "…" }, ...(nights.data ?? [])]
+      ? [{ id: entry.night_out_id, name: entry.night_out_name ?? "…" }, ...(nights.data ?? [])]
       : (nights.data ?? []);
 
   // In-app camera (video only, no audio). Stream lives here; the effect below
@@ -303,47 +274,22 @@ function LogForm({
     newNight: { name: string; location: string | null } | null;
   };
 
-  // "+ New night out" creates the night inside the save, then points the
-  // entry at it.
-  async function resolveNightOut(
-    supabase: ReturnType<typeof createClient>,
-    { fields, newNight }: Payload
-  ) {
-    if (!newNight) return fields.night_out_id;
-    const { data, error } = await supabase
-      .from("night_outs")
-      .insert({ user_id: userId, ...newNight })
-      .select("id")
-      .single();
-    if (error) throw error;
-    return data.id as string;
-  }
-
+  // "+ New night out" is created alongside the entry, in one transaction, so
+  // a failed save cannot leave an orphan session behind.
   const saveEdit = useMutation({
-    mutationFn: async (payload: Payload) => {
-      const { fields, photoFile } = payload;
-      const supabase = createClient();
-      const night_out_id = await resolveNightOut(supabase, payload);
-      let photo_path = existingPhotoPath;
+    mutationFn: async ({ fields, photoFile, newNight }: Payload) => {
+      await api(`/entries/${editId}`, {
+        method: "PATCH",
+        ...json({ ...fields, new_night_out: newNight }),
+      });
       if (photoFile) {
-        const blob = await compressPhoto(photoFile);
-        photo_path = existingPhotoPath ?? `${userId}/${editId}.jpg`;
-        const { error } = await supabase.storage
-          .from("photos")
-          .upload(photo_path, blob, { contentType: "image/jpeg", upsert: true });
-        if (error) throw error;
+        await api(`/entries/${editId}/photo`, {
+          method: "POST",
+          body: photoForm(await compressPhoto(photoFile)),
+        });
       } else if (removePhoto && existingPhotoPath) {
-        const { error } = await supabase.storage
-          .from("photos")
-          .remove([existingPhotoPath]);
-        if (error) throw error;
-        photo_path = null;
+        await api(`/entries/${editId}/photo`, { method: "DELETE" });
       }
-      const { error } = await supabase
-        .from("entries")
-        .update({ ...fields, night_out_id, photo_path })
-        .eq("id", editId!);
-      if (error) throw error;
     },
     onSuccess: () => {
       // feed, profile history, stats, and the night-out list all reflect a
@@ -354,23 +300,19 @@ function LogForm({
   });
 
   const createEntry = useMutation({
-    mutationFn: async (payload: Payload & { id: string }) => {
-      const { id, fields, photoFile } = payload;
-      const supabase = createClient();
-      const night_out_id = await resolveNightOut(supabase, payload);
-      let photo_path: string | null = null;
+    // The id is generated here so the confirmation screen can link to the
+    // entry before the write lands.
+    mutationFn: async ({ id, fields, photoFile, newNight }: Payload & { id: string }) => {
+      await api("/entries", {
+        method: "POST",
+        ...json({ id, ...fields, new_night_out: newNight }),
+      });
       if (photoFile) {
-        const blob = await compressPhoto(photoFile);
-        photo_path = `${userId}/${id}.jpg`;
-        const { error } = await supabase.storage
-          .from("photos")
-          .upload(photo_path, blob, { contentType: "image/jpeg" });
-        if (error) throw error;
+        await api(`/entries/${id}/photo`, {
+          method: "POST",
+          body: photoForm(await compressPhoto(photoFile)),
+        });
       }
-      const { error } = await supabase
-        .from("entries")
-        .insert({ id, user_id: userId, ...fields, night_out_id, photo_path });
-      if (error) throw error;
     },
     onSuccess: () => queryClient.invalidateQueries(),
     // restore the form with everything intact so retry is one tap
@@ -378,17 +320,8 @@ function LogForm({
   });
 
   const removeEntry = useMutation({
-    mutationFn: async () => {
-      const supabase = createClient();
-      if (existingPhotoPath) {
-        await supabase.storage.from("photos").remove([existingPhotoPath]);
-      }
-      const { error } = await supabase
-        .from("entries")
-        .delete()
-        .eq("id", editId!);
-      if (error) throw error;
-    },
+    // The API removes the stored photo along with the row.
+    mutationFn: () => api(`/entries/${editId}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: ["entry", editId] });
       queryClient.invalidateQueries();
