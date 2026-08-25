@@ -6,7 +6,9 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['eslint.config.mjs'],
+    // dist is gitignored, but flat config doesn't read .gitignore — without
+    // this every build artifact gets parsed and fails the project service.
+    ignores: ['eslint.config.mjs', 'dist'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
