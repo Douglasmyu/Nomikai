@@ -6,6 +6,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { normalizeDrinkName } from "@/lib/normalize";
+import { compressPhoto } from "@/lib/photo";
+import Header from "../header";
 
 type Drink = {
   id: number;
@@ -21,6 +23,8 @@ type EntryRow = {
   drink_id: number | null;
   drinks: { name: string } | null;
   custom_drink_name: string | null;
+  night_out_id: string | null;
+  night_outs: { name: string } | null;
   logged_at: string;
   location: string | null;
   note: string | null;
@@ -28,28 +32,26 @@ type EntryRow = {
   photo_path: string | null;
 };
 
+type HistoryRow = {
+  drink_id: number | null;
+  custom_drink_name: string | null;
+  normalized_drink_name: string;
+};
+
+// One autocomplete option: from the user's history (timesLogged > 0) or the
+// curated list. drinkId null = free-text entry.
+type Option = {
+  drinkId: number | null;
+  name: string;
+  normalized: string;
+  isAlcoholic: boolean | null;
+  timesLogged: number;
+};
+
 function toLocalInput(d: Date) {
   const c = new Date(d);
   c.setMinutes(c.getMinutes() - c.getTimezoneOffset());
   return c.toISOString().slice(0, 16);
-}
-
-// Compress to JPEG targeting <500KB — not WebP: Safari/iOS can't encode it
-// and silently falls back to PNG.
-async function compressPhoto(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Could not process photo"))),
-      "image/jpeg",
-      0.8
-    )
-  );
 }
 
 export default function LogPage() {
@@ -69,7 +71,7 @@ function LogLoader() {
     queryFn: async () => {
       const { data, error } = await createClient()
         .from("entries")
-        .select("*, drinks(name)")
+        .select("*, drinks(name), night_outs(name)")
         .eq("id", editId!)
         .single();
       if (error) throw error;
@@ -82,7 +84,7 @@ function LogLoader() {
   if (editId && entry.isPending) {
     return (
       <main className="flex flex-1 flex-col">
-        <Header />
+        <Header kicker="Log a drink" />
         <div className="kicker px-4 py-7">Loading…</div>
       </main>
     );
@@ -90,7 +92,7 @@ function LogLoader() {
   if (editId && entry.isError) {
     return (
       <main className="flex flex-1 flex-col">
-        <Header />
+        <Header kicker="Log a drink" />
         <p
           className="px-4 py-7 text-sm font-semibold"
           style={{ color: "var(--color-accent)" }}
@@ -139,6 +141,21 @@ function LogForm({
     staleTime: Infinity,
   });
 
+  // Own logging history, for ranking repeats above the curated list (F4).
+  // Explicit user filter: RLS also returns friends' entries now.
+  const history = useQuery({
+    queryKey: ["drink-history"],
+    enabled: drinksWanted && !!userId,
+    queryFn: async () => {
+      const { data, error } = await createClient()
+        .from("entries")
+        .select("drink_id, custom_drink_name, normalized_drink_name")
+        .eq("user_id", userId!);
+      if (error) throw error;
+      return (data ?? []) as HistoryRow[];
+    },
+  });
+
   const [sel, setSel] = useState<Selection | null>(
     entry
       ? {
@@ -159,6 +176,34 @@ function LogForm({
   // edit mode: path of the photo already on the entry; removePhoto marks it for deletion
   const existingPhotoPath = entry?.photo_path ?? null;
   const [removePhoto, setRemovePhoto] = useState(false);
+
+  // Night out (F12): "" = none, "__new__" = create one at save time.
+  const [nightSel, setNightSel] = useState(entry?.night_out_id ?? "");
+  const [newNightName, setNewNightName] = useState("");
+  const [newNightLoc, setNewNightLoc] = useState("");
+  const nights = useQuery({
+    queryKey: ["night-outs"],
+    enabled: showDetails && !!userId,
+    queryFn: async () => {
+      const since = new Date();
+      since.setDate(since.getDate() - 7);
+      const { data, error } = await createClient()
+        .from("night_outs")
+        .select("id, name")
+        .eq("user_id", userId!)
+        .gte("started_at", since.toISOString())
+        .order("started_at", { ascending: false })
+        .limit(20);
+      if (error) throw error;
+      return (data ?? []) as { id: string; name: string }[];
+    },
+  });
+  // Editing an entry whose night out is older than the 7-day window: keep it
+  // selectable rather than silently dropping the assignment.
+  const nightOptions =
+    entry?.night_out_id && !nights.data?.some((n) => n.id === entry.night_out_id)
+      ? [{ id: entry.night_out_id, name: entry.night_outs?.name ?? "…" }, ...(nights.data ?? [])]
+      : (nights.data ?? []);
 
   // In-app camera (video only, no audio). Stream lives here; the effect below
   // owns stopping tracks on close/unmount. camClosed covers the gap where
@@ -242,6 +287,7 @@ function LogForm({
     return {
       drink_id: sel!.drinkId,
       custom_drink_name: sel!.drinkId ? null : sel!.name,
+      night_out_id: nightSel && nightSel !== "__new__" ? nightSel : null,
       logged_at: new Date(loggedAt).toISOString(),
       location: location.trim() || null,
       note: note.trim() || null,
@@ -254,11 +300,30 @@ function LogForm({
   type Payload = {
     fields: ReturnType<typeof entryFields>;
     photoFile: File | null;
+    newNight: { name: string; location: string | null } | null;
   };
 
+  // "+ New night out" creates the night inside the save, then points the
+  // entry at it.
+  async function resolveNightOut(
+    supabase: ReturnType<typeof createClient>,
+    { fields, newNight }: Payload
+  ) {
+    if (!newNight) return fields.night_out_id;
+    const { data, error } = await supabase
+      .from("night_outs")
+      .insert({ user_id: userId, ...newNight })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data.id as string;
+  }
+
   const saveEdit = useMutation({
-    mutationFn: async ({ fields, photoFile }: Payload) => {
+    mutationFn: async (payload: Payload) => {
+      const { fields, photoFile } = payload;
       const supabase = createClient();
+      const night_out_id = await resolveNightOut(supabase, payload);
       let photo_path = existingPhotoPath;
       if (photoFile) {
         const blob = await compressPhoto(photoFile);
@@ -276,19 +341,23 @@ function LogForm({
       }
       const { error } = await supabase
         .from("entries")
-        .update({ ...fields, photo_path })
+        .update({ ...fields, night_out_id, photo_path })
         .eq("id", editId!);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["entry", editId] });
+      // feed, profile history, stats, and the night-out list all reflect a
+      // saved entry — refetch everything rather than tracking keys
+      queryClient.invalidateQueries();
       setSaved({ id: editId!, name: sel!.name });
     },
   });
 
   const createEntry = useMutation({
-    mutationFn: async ({ id, fields, photoFile }: Payload & { id: string }) => {
+    mutationFn: async (payload: Payload & { id: string }) => {
+      const { id, fields, photoFile } = payload;
       const supabase = createClient();
+      const night_out_id = await resolveNightOut(supabase, payload);
       let photo_path: string | null = null;
       if (photoFile) {
         const blob = await compressPhoto(photoFile);
@@ -300,9 +369,10 @@ function LogForm({
       }
       const { error } = await supabase
         .from("entries")
-        .insert({ id, user_id: userId, ...fields, photo_path });
+        .insert({ id, user_id: userId, ...fields, night_out_id, photo_path });
       if (error) throw error;
     },
+    onSuccess: () => queryClient.invalidateQueries(),
     // restore the form with everything intact so retry is one tap
     onError: () => setSaved(null),
   });
@@ -321,6 +391,7 @@ function LogForm({
     },
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: ["entry", editId] });
+      queryClient.invalidateQueries();
       router.push("/");
       router.refresh();
     },
@@ -338,13 +409,49 @@ function LogForm({
       : null);
 
   const normalizedQuery = normalizeDrinkName(query);
-  const matches =
-    normalizedQuery && drinks.data
-      ? drinks.data
-          .filter((d) => d.normalized_name.includes(normalizedQuery))
-          .slice(0, 8)
-      : [];
-  const exactMatch = matches.some((d) => d.normalized_name === normalizedQuery);
+  // F4 ranking: own repeats (by times logged) above the curated list.
+  let matches: Option[] = [];
+  if (normalizedQuery) {
+    const byId = new Map((drinks.data ?? []).map((d) => [d.id, d]));
+    const hist = new Map<string, Option>();
+    for (const h of history.data ?? []) {
+      const existing = hist.get(h.normalized_drink_name);
+      if (existing) {
+        existing.timesLogged++;
+        continue;
+      }
+      const curated = h.drink_id ? byId.get(h.drink_id) : undefined;
+      const name = curated?.name ?? h.custom_drink_name;
+      if (!name) continue; // curated list still loading
+      hist.set(h.normalized_drink_name, {
+        drinkId: h.drink_id,
+        name,
+        normalized: h.normalized_drink_name,
+        isAlcoholic: curated?.is_alcoholic ?? null,
+        timesLogged: 1,
+      });
+    }
+    const histMatches = [...hist.values()]
+      .filter((o) => o.normalized.includes(normalizedQuery))
+      .sort((a, b) => b.timesLogged - a.timesLogged);
+    const curatedMatches = (drinks.data ?? [])
+      .filter(
+        (d) =>
+          d.normalized_name.includes(normalizedQuery) &&
+          !hist.has(d.normalized_name)
+      )
+      .map(
+        (d): Option => ({
+          drinkId: d.id,
+          name: d.name,
+          normalized: d.normalized_name,
+          isAlcoholic: d.is_alcoholic,
+          timesLogged: 0,
+        })
+      );
+    matches = [...histMatches, ...curatedMatches].slice(0, 8);
+  }
+  const exactMatch = matches.some((m) => m.normalized === normalizedQuery);
 
   function resetForm() {
     setSel(null);
@@ -354,6 +461,9 @@ function LogForm({
     setLocation("");
     setNote("");
     setRec(null);
+    setNightSel("");
+    setNewNightName("");
+    setNewNightLoc("");
     setPhoto(null);
     closeCamera();
     setCamError(null);
@@ -367,7 +477,14 @@ function LogForm({
     setCamError(null);
     closeCamera();
 
-    const payload = { fields: entryFields(), photoFile: photo };
+    const payload = {
+      fields: entryFields(),
+      photoFile: photo,
+      newNight:
+        nightSel === "__new__" && newNightName.trim()
+          ? { name: newNightName.trim(), location: newNightLoc.trim() || null }
+          : null,
+    };
     if (editId) return saveEdit.mutate(payload);
 
     // New entry: optimistic — confirmation renders now, insert runs behind it.
@@ -379,7 +496,7 @@ function LogForm({
   if (saved) {
     return (
       <main className="flex flex-1 flex-col">
-        <Header />
+        <Header kicker="Log a drink" />
         <div className="px-4 py-7">
           <div className="kicker mb-2">Logged</div>
           <h2 className="text-[32px] leading-[1.05] tracking-[-0.03em]">
@@ -410,7 +527,7 @@ function LogForm({
 
   return (
     <main className="flex flex-1 flex-col">
-      <Header />
+      <Header kicker="Log a drink" />
       <form
         className="p-4"
         onSubmit={(e) => {
@@ -455,15 +572,20 @@ function LogForm({
                 className="border border-t-0"
                 style={{ borderColor: "var(--color-divider)" }}
               >
-                {matches.map((d) => (
+                {matches.map((m) => (
                   <button
-                    key={d.id}
+                    key={m.normalized}
                     type="button"
                     className="block w-full cursor-pointer px-3.5 py-2.5 text-left text-[15px] hover:bg-[var(--color-surface)]"
-                    onClick={() => setSel({ drinkId: d.id, name: d.name })}
+                    onClick={() => setSel({ drinkId: m.drinkId, name: m.name })}
                   >
-                    {d.name}
-                    {!d.is_alcoholic && (
+                    {m.name}
+                    {m.timesLogged > 0 && (
+                      <span className="kicker ml-2">
+                        logged {m.timesLogged}×
+                      </span>
+                    )}
+                    {m.isAlcoholic === false && (
                       <span className="kicker ml-2">zero proof</span>
                     )}
                   </button>
@@ -534,6 +656,41 @@ function LogForm({
                   No
                 </button>
               </div>
+            </div>
+            <div className="field mt-3">
+              <label htmlFor="nightOut">Night out · optional</label>
+              <select
+                id="nightOut"
+                className="input"
+                value={nightSel}
+                onChange={(e) => setNightSel(e.target.value)}
+              >
+                <option value="">None</option>
+                {nightOptions.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+                <option value="__new__">+ New night out</option>
+              </select>
+              {nightSel === "__new__" && (
+                <div className="mt-2 flex flex-col gap-2">
+                  <input
+                    className="input"
+                    value={newNightName}
+                    onChange={(e) => setNewNightName(e.target.value)}
+                    placeholder="Name, e.g. Marcus birthday"
+                    maxLength={80}
+                    required
+                  />
+                  <input
+                    className="input"
+                    value={newNightLoc}
+                    onChange={(e) => setNewNightLoc(e.target.value)}
+                    placeholder="Where · optional"
+                  />
+                </div>
+              )}
             </div>
             <div className="field mt-3">
               <label htmlFor="photo">
@@ -642,21 +799,5 @@ function LogForm({
         )}
       </form>
     </main>
-  );
-}
-
-function Header() {
-  return (
-    <div
-      className="flex items-baseline gap-2.5 border-b-2 px-4 pt-3.5 pb-3"
-      style={{ borderColor: "var(--color-divider)" }}
-    >
-      <h1 className="mr-auto text-[20px] tracking-[-0.02em]">
-        <Link href="/" className="!text-[inherit] no-underline">
-          NOMIKAI
-        </Link>
-      </h1>
-      <span className="kicker">Log a drink</span>
-    </div>
   );
 }
