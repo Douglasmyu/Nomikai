@@ -1,7 +1,8 @@
 import { notFound, redirect } from "next/navigation";
+import { apiServer } from "@/lib/api-server";
 import { createClient } from "@/lib/supabase/server";
 import Header from "../../header";
-import ProfileView from "./profile-view";
+import ProfileView, { type Profile } from "./profile-view";
 
 export default async function ProfilePage(props: PageProps<"/u/[username]">) {
   const { username } = await props.params;
@@ -11,11 +12,9 @@ export default async function ProfilePage(props: PageProps<"/u/[username]">) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("id, username, avatar_url, user_code, timezone")
-    .eq("username", username)
-    .single();
+  const profile = await apiServer<Profile>(
+    `/profiles/${encodeURIComponent(username)}`
+  );
   if (!profile) notFound();
 
   const own = profile.id === user.id;

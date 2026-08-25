@@ -1,33 +1,19 @@
 "use client";
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createClient } from "@/lib/supabase/client";
-import { signPhotoPaths } from "@/lib/photo";
+import { api, json } from "@/lib/api";
 import EntryCard, { type EntryRowData } from "../../entry-card";
 import AccountPanel from "../../account-panel";
 
 const PAGE_SIZE = 30;
 
-type Profile = {
+export type Profile = {
   id: string;
   username: string;
   avatar_url: string | null;
+  avatar_src: string | null; // signed by the API
   user_code: string;
   timezone: string;
-};
-
-type EntryQueryRow = {
-  id: string;
-  user_id: string;
-  drinks: { name: string } | null;
-  custom_drink_name: string | null;
-  night_out_id: string | null;
-  night_outs: { name: string } | null;
-  location: string | null;
-  photo_path: string | null;
-  note: string | null;
-  recommended: boolean | null;
-  logged_at: string;
 };
 
 export default function ProfileView({
@@ -45,17 +31,10 @@ export default function ProfileView({
   const friendship = useQuery({
     queryKey: ["friendship", profile.id],
     enabled: !own,
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .from("friendships")
-        .select("id, requester_id, status")
-        .or(
-          `and(requester_id.eq.${viewerId},addressee_id.eq.${profile.id}),and(requester_id.eq.${profile.id},addressee_id.eq.${viewerId})`
-        )
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
+    queryFn: () =>
+      api<{ id: string; requester_id: string; status: string } | null>(
+        `/friendships/with/${profile.id}`
+      ),
   });
   const state = own
     ? "self"
@@ -68,66 +47,26 @@ export default function ProfileView({
           : "pending-in";
   const canSee = own || state === "friends";
 
-  const avatar = useQuery({
-    queryKey: ["avatar", profile.id, profile.avatar_url],
-    enabled: !!profile.avatar_url,
-    queryFn: async () =>
-      (await signPhotoPaths(createClient(), [profile.avatar_url])).get(
-        profile.avatar_url!
-      ) ?? null,
-  });
-
   const stats = useQuery({
     queryKey: ["stats", profile.id],
     enabled: canSee,
-    queryFn: async () => {
-      const { data, error } = await createClient()
-        .rpc("profile_stats", { profile_id: profile.id })
-        .single();
-      if (error) throw error;
-      return data as {
+    queryFn: () =>
+      api<{
         total_entries: number;
         unique_drinks: number;
         nights_out: number;
-      };
-    },
+      }>(`/profiles/${profile.id}/stats`),
   });
 
   const entries = useInfiniteQuery({
     queryKey: ["entries", profile.id],
     enabled: canSee,
     initialPageParam: 0,
-    queryFn: async ({ pageParam }) => {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from("entries")
-        .select(
-          "id, user_id, drinks(name), custom_drink_name, night_out_id, night_outs(name), location, photo_path, note, recommended, logged_at"
-        )
-        .eq("user_id", profile.id)
-        // logged_at ties at minute precision; created_at then id make the
-        // order (and offset pagination) deterministic
-        .order("logged_at", { ascending: false })
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: false })
-        .range(pageParam, pageParam + PAGE_SIZE - 1);
-      if (error) throw error;
-      const rows = (data ?? []) as unknown as EntryQueryRow[];
-      const signed = await signPhotoPaths(
-        supabase,
-        rows.map((r) => r.photo_path)
-      );
-      return rows.map(
-        (r): EntryRowData => ({
-          ...r,
-          username: profile.username,
-          avatar_url: profile.avatar_url,
-          drink_name: r.drinks?.name ?? r.custom_drink_name ?? "",
-          night_out_name: r.night_outs?.name ?? null,
-          photo_url: r.photo_path ? signed.get(r.photo_path) : null,
-        })
-      );
-    },
+    // The API orders, gates on friendship, and signs the photo URLs.
+    queryFn: ({ pageParam }) =>
+      api<EntryRowData[]>(
+        `/entries?user_id=${profile.id}&limit=${PAGE_SIZE}&offset=${pageParam}`
+      ),
     getNextPageParam: (last, _all, lastOffset) =>
       last.length < PAGE_SIZE ? null : lastOffset + PAGE_SIZE,
   });
@@ -135,33 +74,21 @@ export default function ProfileView({
   // Send / accept / withdraw all land here; visibility changes with them,
   // so refetch everything rather than tracking which keys are affected.
   const sendRequest = useMutation({
-    mutationFn: async () => {
-      const { error } = await createClient().from("friendships").insert({
-        requester_id: viewerId,
-        addressee_id: profile.id,
-      });
-      if (error) throw error;
-    },
+    mutationFn: () =>
+      api("/friendships", {
+        method: "POST",
+        ...json({ addressee_id: profile.id }),
+      }),
     onSuccess: () => queryClient.invalidateQueries(),
   });
   const accept = useMutation({
-    mutationFn: async () => {
-      const { error } = await createClient()
-        .from("friendships")
-        .update({ status: "accepted" })
-        .eq("id", friendship.data!.id);
-      if (error) throw error;
-    },
+    mutationFn: () =>
+      api(`/friendships/${friendship.data!.id}`, { method: "PATCH" }),
     onSuccess: () => queryClient.invalidateQueries(),
   });
   const withdraw = useMutation({
-    mutationFn: async () => {
-      const { error } = await createClient()
-        .from("friendships")
-        .delete()
-        .eq("id", friendship.data!.id);
-      if (error) throw error;
-    },
+    mutationFn: () =>
+      api(`/friendships/${friendship.data!.id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries(),
   });
 
@@ -171,9 +98,9 @@ export default function ProfileView({
     <>
       <div className="px-4 py-5">
         <div className="flex items-center gap-3">
-          {avatar.data && (
+          {profile.avatar_src && (
             // eslint-disable-next-line @next/next/no-img-element -- signed URL, remote patterns don't apply
-            <img src={avatar.data} alt="" className="h-14 w-14 object-cover" />
+            <img src={profile.avatar_src} alt="" className="h-14 w-14 object-cover" />
           )}
           <div>
             <h2 className="text-[26px] tracking-[-0.03em]">
