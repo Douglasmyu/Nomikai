@@ -68,6 +68,50 @@ function LogForm() {
   const [existingPhotoPath, setExistingPhotoPath] = useState<string | null>(null);
   const [removePhoto, setRemovePhoto] = useState(false);
 
+  // In-app camera (video only, no audio). Stream lives here; the effect below
+  // owns stopping tracks on close/unmount.
+  const [camStream, setCamStream] = useState<MediaStream | null>(null);
+  const camVideoRef = useRef<HTMLVideoElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    return () => camStream?.getTracks().forEach((t) => t.stop());
+  }, [camStream]);
+
+  async function openCamera() {
+    setError(null);
+    try {
+      // Triggers the browser's standard camera permission prompt.
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      setCamStream(s);
+    } catch {
+      setError("Camera unavailable — allow camera access or pick a file instead.");
+    }
+  }
+
+  function capturePhoto() {
+    const v = camVideoRef.current;
+    if (!v || !v.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    canvas.getContext("2d")!.drawImage(v, 0, 0);
+    canvas.toBlob(
+      (b) => {
+        if (b) {
+          setPhoto(new File([b], "camera.jpg", { type: "image/jpeg" }));
+          setRemovePhoto(false);
+          if (photoInputRef.current) photoInputRef.current.value = "";
+        }
+      },
+      "image/jpeg",
+      0.9
+    );
+    setCamStream(null);
+  }
+
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<{ id: string; name: string } | null>(null);
@@ -134,6 +178,7 @@ function LogForm() {
     setNote("");
     setRec(null);
     setPhoto(null);
+    setCamStream(null);
     setError(null);
     setSaved(null);
     setPending(false);
@@ -392,6 +437,7 @@ function LogForm() {
               </label>
               <input
                 id="photo"
+                ref={photoInputRef}
                 className="input !py-2"
                 type="file"
                 accept="image/*"
@@ -400,6 +446,48 @@ function LogForm() {
                   setRemovePhoto(false);
                 }}
               />
+              {camStream ? (
+                <>
+                  <video
+                    className="mt-2 w-full"
+                    ref={(el) => {
+                      camVideoRef.current = el;
+                      if (el && el.srcObject !== camStream)
+                        el.srcObject = camStream;
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-primary !mt-2 flex-1 !min-h-[42px]"
+                      onClick={capturePhoto}
+                    >
+                      Capture
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary !mt-2 flex-1 !min-h-[42px]"
+                      onClick={() => setCamStream(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary !mt-2 btn-block !min-h-[42px]"
+                  onClick={openCamera}
+                >
+                  Take photo
+                </button>
+              )}
+              {photo?.name === "camera.jpg" && (
+                <span className="kicker mt-1 block">Camera photo attached</span>
+              )}
               {existingPhotoPath && !removePhoto && !photo && (
                 <button
                   type="button"
