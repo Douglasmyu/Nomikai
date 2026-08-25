@@ -9,6 +9,8 @@ Nomikai — a drink-counting app with leaderboards and different drinks to try. 
 ## Structure
 
 - `web/` — Next.js (TypeScript, App Router, Tailwind). Talks to Supabase with the publishable key (`web/.env.local`).
+  Anything read from Supabase in a client component goes through TanStack Query (`useQuery`/`useMutation` + `invalidateQueries`),
+  not `useState` + `useEffect`. Provider lives in `web/app/providers.tsx`; `useState` is for form fields and UI toggles only.
 - `api/` — NestJS (TypeScript) with Drizzle ORM (`api/drizzle.config.ts`, schema in `api/src/db/schema.ts`). Uses the secret key / direct DB connection (`api/.env`).
 - `supabase/` — Supabase CLI config, migrations (schema starts with `profiles`), and auth email templates (`templates/otp.html`; hosted free tier ignores them until custom SMTP is configured).
 

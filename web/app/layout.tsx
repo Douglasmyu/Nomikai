@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Archivo } from "next/font/google";
 import "./globals.css";
+import Providers from "./providers";
 
 const archivo = Archivo({
   variable: "--font-archivo",
@@ -17,9 +18,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${archivo.variable} h-full antialiased`}>
       <body className="min-h-full">
-        <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col">
-          {children}
-        </div>
+        <Providers>
+          <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col">
+            {children}
+          </div>
+        </Providers>
       </body>
     </html>
   );
