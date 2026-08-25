@@ -20,7 +20,7 @@ const STATUS: Record<string, number> = {
 };
 
 /** Drizzle wraps driver errors in DrizzleQueryError, so the code is on .cause. */
-function pgCode(error: unknown): string | undefined {
+export function pgCode(error: unknown): string | undefined {
   for (let e = error; e; e = (e as { cause?: unknown }).cause) {
     const code = (e as { code?: unknown }).code;
     if (typeof code === 'string' && code in STATUS) return code;
