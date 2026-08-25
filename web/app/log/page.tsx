@@ -69,47 +69,78 @@ function LogForm() {
   const [removePhoto, setRemovePhoto] = useState(false);
 
   // In-app camera (video only, no audio). Stream lives here; the effect below
-  // owns stopping tracks on close/unmount.
+  // owns stopping tracks on close/unmount. camClosed covers the gap where
+  // getUserMedia is still pending — a stream resolving after close/unmount
+  // must be stopped, not set.
   const [camStream, setCamStream] = useState<MediaStream | null>(null);
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const camClosed = useRef(false);
   useEffect(() => {
     return () => camStream?.getTracks().forEach((t) => t.stop());
   }, [camStream]);
+  useEffect(() => {
+    return () => {
+      camClosed.current = true;
+    };
+  }, []);
 
   async function openCamera() {
     setError(null);
+    camClosed.current = false;
     try {
       // Triggers the browser's standard camera permission prompt.
       const s = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
       });
+      if (camClosed.current) {
+        s.getTracks().forEach((t) => t.stop());
+        return;
+      }
       setCamStream(s);
     } catch {
       setError("Camera unavailable — allow camera access or pick a file instead.");
     }
   }
 
+  function closeCamera() {
+    camClosed.current = true;
+    setCamStream(null);
+  }
+
   function capturePhoto() {
     const v = camVideoRef.current;
-    if (!v || !v.videoWidth) return;
+    // readyState < HAVE_CURRENT_DATA would drawImage nothing → black JPEG
+    if (!v || v.readyState < 2) {
+      setError("Camera is still starting — try again.");
+      return;
+    }
+    setError(null);
     const canvas = document.createElement("canvas");
     canvas.width = v.videoWidth;
     canvas.height = v.videoHeight;
     canvas.getContext("2d")!.drawImage(v, 0, 0);
     canvas.toBlob(
       (b) => {
-        if (b) {
-          setPhoto(new File([b], "camera.jpg", { type: "image/jpeg" }));
-          setRemovePhoto(false);
-          if (photoInputRef.current) photoInputRef.current.value = "";
+        if (!b) {
+          setError("Could not capture photo — try again.");
+          return;
         }
+        const f = new File([b], "camera.jpg", { type: "image/jpeg" });
+        setPhoto(f);
+        setRemovePhoto(false);
+        if (photoInputRef.current) {
+          // show the capture in the file input natively
+          const dt = new DataTransfer();
+          dt.items.add(f);
+          photoInputRef.current.files = dt.files;
+        }
+        closeCamera();
       },
       "image/jpeg",
       0.9
     );
-    setCamStream(null);
   }
 
   const [error, setError] = useState<string | null>(null);
@@ -178,7 +209,7 @@ function LogForm() {
     setNote("");
     setRec(null);
     setPhoto(null);
-    setCamStream(null);
+    closeCamera();
     setError(null);
     setSaved(null);
     setPending(false);
@@ -187,6 +218,7 @@ function LogForm() {
   async function submit() {
     if (!sel || !userId) return;
     setError(null);
+    closeCamera();
 
     const fields = {
       drink_id: sel.drinkId,
@@ -470,7 +502,7 @@ function LogForm() {
                     <button
                       type="button"
                       className="btn btn-secondary !mt-2 flex-1 !min-h-[42px]"
-                      onClick={() => setCamStream(null)}
+                      onClick={closeCamera}
                     >
                       Cancel
                     </button>
@@ -484,9 +516,6 @@ function LogForm() {
                 >
                   Take photo
                 </button>
-              )}
-              {photo?.name === "camera.jpg" && (
-                <span className="kicker mt-1 block">Camera photo attached</span>
               )}
               {existingPhotoPath && !removePhoto && !photo && (
                 <button
