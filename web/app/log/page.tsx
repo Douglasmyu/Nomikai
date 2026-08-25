@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -15,6 +16,17 @@ type Drink = {
 
 // drinkId null = free-text entry
 type Selection = { drinkId: number | null; name: string };
+
+type EntryRow = {
+  drink_id: number | null;
+  drinks: { name: string } | null;
+  custom_drink_name: string | null;
+  logged_at: string;
+  location: string | null;
+  note: string | null;
+  recommended: boolean | null;
+  photo_path: string | null;
+};
 
 function toLocalInput(d: Date) {
   const c = new Date(d);
@@ -43,29 +55,109 @@ async function compressPhoto(file: File): Promise<Blob> {
 export default function LogPage() {
   return (
     <Suspense>
-      <LogForm />
+      <LogLoader />
     </Suspense>
   );
 }
 
-function LogForm() {
-  const router = useRouter();
+// Edit mode needs the entry in hand before the form mounts: the inputs are
+// controlled, so their initial values are the seeding step.
+function LogLoader() {
   const editId = useSearchParams().get("id");
-  const [userId, setUserId] = useState<string | null>(null);
+  const entry = useQuery({
+    queryKey: ["entry", editId],
+    queryFn: async () => {
+      const { data, error } = await createClient()
+        .from("entries")
+        .select("*, drinks(name)")
+        .eq("id", editId!)
+        .single();
+      if (error) throw error;
+      return data as EntryRow;
+    },
+    enabled: !!editId,
+    retry: false,
+  });
 
-  const [drinks, setDrinks] = useState<Drink[] | null>(null);
-  const drinksRequested = useRef(false);
+  if (editId && entry.isPending) {
+    return (
+      <main className="flex flex-1 flex-col">
+        <Header />
+        <div className="kicker px-4 py-7">Loading…</div>
+      </main>
+    );
+  }
+  if (editId && entry.isError) {
+    return (
+      <main className="flex flex-1 flex-col">
+        <Header />
+        <p
+          className="px-4 py-7 text-sm font-semibold"
+          style={{ color: "var(--color-accent)" }}
+        >
+          Could not load that entry.
+        </p>
+      </main>
+    );
+  }
+  return <LogForm editId={editId} entry={entry.data ?? null} />;
+}
 
-  const [sel, setSel] = useState<Selection | null>(null);
+function LogForm({
+  editId,
+  entry,
+}: {
+  editId: string | null;
+  entry: EntryRow | null;
+}) {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+
+  const user = useQuery({
+    queryKey: ["user"],
+    queryFn: async () => (await createClient().auth.getUser()).data.user,
+    staleTime: Infinity,
+  });
+  const userId = user.data?.id ?? null;
+  useEffect(() => {
+    if (user.isSuccess && !user.data) router.push("/login");
+  }, [user.isSuccess, user.data, router]);
+
+  // Curated list: fetched on first focus, then reused for the session.
+  const [drinksWanted, setDrinksWanted] = useState(false);
+  const drinks = useQuery({
+    queryKey: ["drinks"],
+    queryFn: async () => {
+      const { data, error } = await createClient()
+        .from("drinks")
+        .select("id, name, normalized_name, is_alcoholic")
+        .order("name");
+      if (error) throw error;
+      return (data ?? []) as Drink[];
+    },
+    enabled: drinksWanted,
+    staleTime: Infinity,
+  });
+
+  const [sel, setSel] = useState<Selection | null>(
+    entry
+      ? {
+          drinkId: entry.drink_id,
+          name: entry.drink_id ? entry.drinks!.name : entry.custom_drink_name!,
+        }
+      : null
+  );
   const [query, setQuery] = useState("");
-  const [showDetails, setShowDetails] = useState(false);
-  const [loggedAt, setLoggedAt] = useState(() => toLocalInput(new Date()));
-  const [location, setLocation] = useState("");
-  const [note, setNote] = useState("");
-  const [rec, setRec] = useState<boolean | null>(null);
+  const [showDetails, setShowDetails] = useState(!!entry);
+  const [loggedAt, setLoggedAt] = useState(() =>
+    toLocalInput(entry ? new Date(entry.logged_at) : new Date())
+  );
+  const [location, setLocation] = useState(entry?.location ?? "");
+  const [note, setNote] = useState(entry?.note ?? "");
+  const [rec, setRec] = useState<boolean | null>(entry?.recommended ?? null);
   const [photo, setPhoto] = useState<File | null>(null);
   // edit mode: path of the photo already on the entry; removePhoto marks it for deletion
-  const [existingPhotoPath, setExistingPhotoPath] = useState<string | null>(null);
+  const existingPhotoPath = entry?.photo_path ?? null;
   const [removePhoto, setRemovePhoto] = useState(false);
 
   // In-app camera (video only, no audio). Stream lives here; the effect below
@@ -86,7 +178,7 @@ function LogForm() {
   }, []);
 
   async function openCamera() {
-    setError(null);
+    setCamError(null);
     camClosed.current = false;
     try {
       // Triggers the browser's standard camera permission prompt.
@@ -100,7 +192,7 @@ function LogForm() {
       }
       setCamStream(s);
     } catch {
-      setError("Camera unavailable — allow camera access or pick a file instead.");
+      setCamError("Camera unavailable — allow camera access or pick a file instead.");
     }
   }
 
@@ -113,10 +205,10 @@ function LogForm() {
     const v = camVideoRef.current;
     // readyState < HAVE_CURRENT_DATA would drawImage nothing → black JPEG
     if (!v || v.readyState < 2) {
-      setError("Camera is still starting — try again.");
+      setCamError("Camera is still starting — try again.");
       return;
     }
-    setError(null);
+    setCamError(null);
     const canvas = document.createElement("canvas");
     canvas.width = v.videoWidth;
     canvas.height = v.videoHeight;
@@ -124,7 +216,7 @@ function LogForm() {
     canvas.toBlob(
       (b) => {
         if (!b) {
-          setError("Could not capture photo — try again.");
+          setCamError("Could not capture photo — try again.");
           return;
         }
         const f = new File([b], "camera.jpg", { type: "image/jpeg" });
@@ -143,58 +235,112 @@ function LogForm() {
     );
   }
 
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [camError, setCamError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ id: string; name: string } | null>(null);
-  const [pending, setPending] = useState(false);
 
-  useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) {
-        router.push("/login");
-        return;
-      }
-      setUserId(user.id);
-      if (editId) {
-        const { data, error } = await supabase
-          .from("entries")
-          .select("*, drinks(name)")
-          .eq("id", editId)
-          .single();
-        if (error || !data) {
-          setError("Could not load that entry.");
-          return;
-        }
-        setSel({
-          drinkId: data.drink_id,
-          name: data.drink_id ? data.drinks!.name : data.custom_drink_name!,
-        });
-        setLoggedAt(toLocalInput(new Date(data.logged_at)));
-        setLocation(data.location ?? "");
-        setNote(data.note ?? "");
-        setRec(data.recommended);
-        setExistingPhotoPath(data.photo_path);
-        setShowDetails(true);
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editId]);
-
-  async function loadDrinks() {
-    if (drinksRequested.current) return;
-    drinksRequested.current = true;
-    const { data } = await createClient()
-      .from("drinks")
-      .select("id, name, normalized_name, is_alcoholic")
-      .order("name");
-    setDrinks(data ?? []);
+  function entryFields() {
+    return {
+      drink_id: sel!.drinkId,
+      custom_drink_name: sel!.drinkId ? null : sel!.name,
+      logged_at: new Date(loggedAt).toISOString(),
+      location: location.trim() || null,
+      note: note.trim() || null,
+      recommended: rec,
+    };
   }
+
+  // Snapshotted at submit time and passed in, so a re-render mid-flight cannot
+  // swap the values out from under an in-flight write.
+  type Payload = {
+    fields: ReturnType<typeof entryFields>;
+    photoFile: File | null;
+  };
+
+  const saveEdit = useMutation({
+    mutationFn: async ({ fields, photoFile }: Payload) => {
+      const supabase = createClient();
+      let photo_path = existingPhotoPath;
+      if (photoFile) {
+        const blob = await compressPhoto(photoFile);
+        photo_path = existingPhotoPath ?? `${userId}/${editId}.jpg`;
+        const { error } = await supabase.storage
+          .from("photos")
+          .upload(photo_path, blob, { contentType: "image/jpeg", upsert: true });
+        if (error) throw error;
+      } else if (removePhoto && existingPhotoPath) {
+        const { error } = await supabase.storage
+          .from("photos")
+          .remove([existingPhotoPath]);
+        if (error) throw error;
+        photo_path = null;
+      }
+      const { error } = await supabase
+        .from("entries")
+        .update({ ...fields, photo_path })
+        .eq("id", editId!);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["entry", editId] });
+      setSaved({ id: editId!, name: sel!.name });
+    },
+  });
+
+  const createEntry = useMutation({
+    mutationFn: async ({ id, fields, photoFile }: Payload & { id: string }) => {
+      const supabase = createClient();
+      let photo_path: string | null = null;
+      if (photoFile) {
+        const blob = await compressPhoto(photoFile);
+        photo_path = `${userId}/${id}.jpg`;
+        const { error } = await supabase.storage
+          .from("photos")
+          .upload(photo_path, blob, { contentType: "image/jpeg" });
+        if (error) throw error;
+      }
+      const { error } = await supabase
+        .from("entries")
+        .insert({ id, user_id: userId, ...fields, photo_path });
+      if (error) throw error;
+    },
+    // restore the form with everything intact so retry is one tap
+    onError: () => setSaved(null),
+  });
+
+  const removeEntry = useMutation({
+    mutationFn: async () => {
+      const supabase = createClient();
+      if (existingPhotoPath) {
+        await supabase.storage.from("photos").remove([existingPhotoPath]);
+      }
+      const { error } = await supabase
+        .from("entries")
+        .delete()
+        .eq("id", editId!);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["entry", editId] });
+      router.push("/");
+      router.refresh();
+    },
+  });
+
+  const busy = saveEdit.isPending || removeEntry.isPending;
+  const pending = createEntry.isPending;
+  const failure = saveEdit.error ?? createEntry.error ?? removeEntry.error;
+  const error =
+    camError ??
+    (failure
+      ? failure instanceof Error
+        ? failure.message
+        : "Could not save."
+      : null);
 
   const normalizedQuery = normalizeDrinkName(query);
   const matches =
-    normalizedQuery && drinks
-      ? drinks
+    normalizedQuery && drinks.data
+      ? drinks.data
           .filter((d) => d.normalized_name.includes(normalizedQuery))
           .slice(0, 8)
       : [];
@@ -210,97 +356,24 @@ function LogForm() {
     setRec(null);
     setPhoto(null);
     closeCamera();
-    setError(null);
+    setCamError(null);
     setSaved(null);
-    setPending(false);
+    saveEdit.reset();
+    createEntry.reset();
   }
 
-  async function submit() {
+  function submit() {
     if (!sel || !userId) return;
-    setError(null);
+    setCamError(null);
     closeCamera();
 
-    const fields = {
-      drink_id: sel.drinkId,
-      custom_drink_name: sel.drinkId ? null : sel.name,
-      logged_at: new Date(loggedAt).toISOString(),
-      location: location.trim() || null,
-      note: note.trim() || null,
-      recommended: rec,
-    };
-    const supabase = createClient();
-
-    if (editId) {
-      setBusy(true);
-      try {
-        let photo_path = existingPhotoPath;
-        if (photo) {
-          const blob = await compressPhoto(photo);
-          photo_path = existingPhotoPath ?? `${userId}/${editId}.jpg`;
-          const { error } = await supabase.storage
-            .from("photos")
-            .upload(photo_path, blob, { contentType: "image/jpeg", upsert: true });
-          if (error) throw error;
-        } else if (removePhoto && existingPhotoPath) {
-          const { error } = await supabase.storage
-            .from("photos")
-            .remove([existingPhotoPath]);
-          if (error) throw error;
-          photo_path = null;
-        }
-        const { error } = await supabase
-          .from("entries")
-          .update({ ...fields, photo_path })
-          .eq("id", editId);
-        if (error) throw error;
-        setSaved({ id: editId, name: sel.name });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not save.");
-      }
-      setBusy(false);
-      return;
-    }
+    const payload = { fields: entryFields(), photoFile: photo };
+    if (editId) return saveEdit.mutate(payload);
 
     // New entry: optimistic — confirmation renders now, insert runs behind it.
     const id = crypto.randomUUID();
-    const photoFile = photo;
     setSaved({ id, name: sel.name });
-    setPending(true);
-    try {
-      let photo_path: string | null = null;
-      if (photoFile) {
-        const blob = await compressPhoto(photoFile);
-        photo_path = `${userId}/${id}.jpg`;
-        const { error } = await supabase.storage
-          .from("photos")
-          .upload(photo_path, blob, { contentType: "image/jpeg" });
-        if (error) throw error;
-      }
-      const { error } = await supabase
-        .from("entries")
-        .insert({ id, user_id: userId, ...fields, photo_path });
-      if (error) throw error;
-      setPending(false);
-    } catch (e) {
-      // restore the form with everything intact so retry is one tap
-      setSaved(null);
-      setPending(false);
-      setError(e instanceof Error ? e.message : "Could not save.");
-    }
-  }
-
-  async function deleteEntry() {
-    if (!editId) return;
-    setBusy(true);
-    const supabase = createClient();
-    if (existingPhotoPath) {
-      await supabase.storage.from("photos").remove([existingPhotoPath]);
-    }
-    const { error } = await supabase.from("entries").delete().eq("id", editId);
-    setBusy(false);
-    if (error) return setError(error.message);
-    router.push("/");
-    router.refresh();
+    createEntry.mutate({ id, ...payload });
   }
 
   if (saved) {
@@ -372,7 +445,7 @@ function LogForm() {
               className="input"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onFocus={loadDrinks}
+              onFocus={() => setDrinksWanted(true)}
               placeholder="Start typing…"
               autoComplete="off"
               autoFocus
@@ -554,7 +627,7 @@ function LogForm() {
               borderWidth: 1,
             }}
             disabled={busy}
-            onClick={deleteEntry}
+            onClick={() => removeEntry.mutate()}
           >
             Delete entry
           </button>
