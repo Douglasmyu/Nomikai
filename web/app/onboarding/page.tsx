@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
+import { api, json } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
 
 export default function OnboardingPage() {
@@ -24,19 +25,13 @@ export default function OnboardingPage() {
 
   const submit = useMutation({
     mutationFn: async () => {
-      const supabase = createClient();
       const {
         data: { user },
-      } = await supabase.auth.getUser();
+      } = await createClient().auth.getUser();
       // Signed out while the form was open.
       if (!user) return false;
-      const { error } = await supabase.from("profiles").insert({
-        id: user.id,
-        username,
-        timezone,
-        age_attested_at: new Date().toISOString(),
-      });
-      if (error) throw error;
+      // age_attested_at is stamped server-side.
+      await api("/me", { method: "POST", ...json({ username, timezone }) });
       return true;
     },
     onSuccess: (created) => {
