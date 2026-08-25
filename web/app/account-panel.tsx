@@ -70,7 +70,8 @@ export default function AccountPanel(props: {
     // cascades every row.
     mutationFn: async () => {
       await api("/me", { method: "DELETE" });
-      await createClient().auth.signOut();
+      // scope local: the account is gone, so a server-side logout would 403.
+      await createClient().auth.signOut({ scope: "local" });
     },
     onSuccess: () => {
       router.push("/login");

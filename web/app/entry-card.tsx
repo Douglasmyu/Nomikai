@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 
-// Shape of one feed/profile row, matching feed_entries(); photo_url and
-// avatar_src are signed URLs attached client-side after fetch.
+// Shape of one feed/profile row as the API returns it; photo_url and
+// avatar_src are signed URLs the API attaches to each row.
 export type EntryRowData = {
   id: string;
   user_id: string;
