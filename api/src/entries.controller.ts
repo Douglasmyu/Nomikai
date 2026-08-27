@@ -15,6 +15,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { and, desc, eq } from 'drizzle-orm';
 import { AuthGuard, UserId } from './auth.guard';
 import { DB, type Db } from './db';
@@ -65,7 +66,7 @@ export class EntriesController {
     @Query('offset') offset = '0',
   ) {
     await assertCanSee(this.db, viewerId, targetId);
-    const rows = await entryQuery(this.db)
+    const rows = await entryQuery(this.db, viewerId)
       .where(eq(entries.userId, targetId))
       // logged_at ties at minute precision; created_at then id make the
       // order (and offset pagination) deterministic
@@ -170,6 +171,7 @@ export class EntriesController {
   }
 
   @Post(':id/photo')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file'))
   async setPhoto(
     @UserId() userId: string,
