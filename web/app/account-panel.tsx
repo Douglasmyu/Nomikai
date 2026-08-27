@@ -68,6 +68,9 @@ export default function AccountPanel(props: {
       if (error) throw error;
     },
     onSuccess: () => {
+      // No query key is user-scoped, so drop the whole cache: otherwise the
+      // next account signed in on this device reads the previous user's data.
+      queryClient.clear();
       router.push("/login");
       router.refresh();
     },
@@ -82,6 +85,7 @@ export default function AccountPanel(props: {
       await createClient().auth.signOut({ scope: "local" });
     },
     onSuccess: () => {
+      queryClient.clear();
       router.push("/login");
       router.refresh();
     },
