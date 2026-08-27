@@ -33,7 +33,7 @@ type EntryBody = {
   location: string | null;
   note: string | null;
   recommended: boolean | null;
-  new_night_out?: { name: string; location: string | null } | null;
+  new_night_out?: { id?: string; name: string; location: string | null } | null;
 };
 
 @Controller('entries')
@@ -220,13 +220,14 @@ async function resolveNightOut(
   body: EntryBody,
 ): Promise<string | null> {
   if (!body.new_night_out) return body.night_out_id;
+  const { id, name, location } = body.new_night_out;
+  // Stable client id + do-nothing keeps a save retry idempotent: after the
+  // entry write commits but the photo step fails, retrying links the same
+  // night instead of creating a duplicate orphan.
   const [night] = await tx
     .insert(nightOuts)
-    .values({
-      userId,
-      name: body.new_night_out.name,
-      location: body.new_night_out.location,
-    })
+    .values({ ...(id && { id }), userId, name, location })
+    .onConflictDoNothing()
     .returning({ id: nightOuts.id });
-  return night.id;
+  return night?.id ?? id ?? null;
 }
